@@ -120,7 +120,20 @@ boolean         storedemo;
 // If true, the main game loop has started.
 boolean         main_loop_started = false;
 
-int             show_endoom = 1;
+// Forced off - I_Endoom() (i_endoom.c) opens its own SDL window and spins
+// in `while (true) { ...; if (TXT_GetChar() > 0) break; }` waiting for a
+// REAL keyboard keypress via the textscreen library - a completely
+// separate path from our gamepad bridge (Sf3500PumpInput posts into
+// Doom's own D_PostEvent queue, never into SDL's keyboard event stream
+// TXT_GetChar() reads, and this loop isn't part of the normal tic loop
+// Sf3500PumpInput runs from anyway). Confirmed real-hardware hang: every
+// quit hit this and froze forever, immune to the SELECT+START bypass
+// since that's only checked inside the normal per-tic path. Not exposed
+// in any accessible menu on this device (config-only, same discipline as
+// every other forced default here) - purely decorative DOS-era text art,
+// zero gameplay value, structurally incompatible with a device that has
+// no keyboard at all.
+int             show_endoom = 0;
 int             show_diskicon = 1;
 
 

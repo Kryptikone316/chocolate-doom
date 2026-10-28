@@ -42,7 +42,8 @@ endif()
 
 # Find the include directory.
 find_path(SDL2_MIXER_INCLUDE_DIR "SDL_mixer.h"
-    HINTS "${SDL2_MIXER_DIR}/include" ${PC_SDL2_MIXER_INCLUDE_DIRS})
+    HINTS "${SDL2_MIXER_DIR}/include" ${PC_SDL2_MIXER_INCLUDE_DIRS}
+    PATH_SUFFIXES SDL2)
 
 # Find the version.  Taken and modified from CMake's FindSDL.cmake.
 if(SDL2_MIXER_INCLUDE_DIR AND EXISTS "${SDL2_MIXER_INCLUDE_DIR}/SDL_mixer.h")

@@ -61,6 +61,10 @@ set_target_properties("${PROGRAM_PREFIX}server" PROPERTIES LINK_FLAGS "${SDL_FLA
 
 set(GAME_SOURCE_FILES
     aes_prng.c          aes_prng.h
+    sf3500/hwaudio.c    sf3500/hwaudio.h
+    sf3500/hwdisp.c     sf3500/hwdisp.h
+    sf3500/joykey.c     sf3500/joykey.h
+    sf3500/sf3500_bridge.c sf3500/sf3500_bridge.h
     d_event.c           d_event.h
                         doomkeys.h
                         doomtype.h
@@ -146,7 +150,12 @@ set(DEHACKED_SOURCE_FILES
 set(SOURCE_FILES ${COMMON_SOURCE_FILES} ${GAME_SOURCE_FILES})
 set(SOURCE_FILES_WITH_DEH ${SOURCE_FILES} ${DEHACKED_SOURCE_FILES})
 
-set(EXTRA_LIBS ${SDL_LINK_LIBS} textscreen pcsound opl)
+# sf3500/hwaudio.c needs pthreads, sf3500/hwdisp.c + hwaudio.c dlopen() the
+# real hardware driver - both only needed for this device bridge.
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
+set(EXTRA_LIBS ${SDL_LINK_LIBS} textscreen pcsound opl Threads::Threads ${CMAKE_DL_LIBS})
 if(SampleRate_FOUND)
     list(APPEND EXTRA_LIBS SampleRate::samplerate)
 endif()

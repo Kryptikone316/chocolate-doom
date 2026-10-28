@@ -35,6 +35,7 @@
 #include "i_swap.h"
 #include "m_argv.h"
 #include "m_misc.h"
+#include "sf3500/sf3500_bridge.h"
 #include "w_wad.h"
 #include "z_zone.h"
 
@@ -1078,15 +1079,27 @@ static boolean I_SDL_InitSound(GameMission_t mission)
         return false;
     }
 
-    if (Mix_OpenAudioDevice(snd_samplerate, AUDIO_S16SYS, 2, GetSliceSize(), NULL, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE) < 0)
+    // Don't allow SDL to silently negotiate a different rate than
+    // requested - this device's dummy audio driver reports bogus "native"
+    // values (confirmed on the video side: a dummy display mode query
+    // returned 1024x768, nothing like the real hardware), and our
+    // Sf3500AudioPostMix() bridge has zero resampling tolerance for a
+    // mismatch - it assumes exactly HWAUDIO_RATE (48000) with no
+    // conversion. Request an exact rate instead of an adjustable one.
+    if (Mix_OpenAudioDevice(snd_samplerate, AUDIO_S16SYS, 2, GetSliceSize(), NULL, 0) < 0)
     {
         fprintf(stderr, "Error initialising SDL_mixer: %s\n", Mix_GetError());
         return false;
     }
+    // Tap SDL_mixer's fully-mixed output and feed it to the real hardware
+    // audio driver - see sf3500_bridge.c.
+    Mix_SetPostMix(Sf3500AudioPostMix, NULL);
 
     ExpandSoundData = ExpandSoundData_SDL;
 
     Mix_QuerySpec(&mixer_freq, &mixer_format, &mixer_channels);
+    printf("sf3500: Mix_QuerySpec freq=%d format=0x%x channels=%d\n",
+           mixer_freq, mixer_format, mixer_channels);
 
 #ifdef HAVE_LIBSAMPLERATE
     if (use_libsamplerate != 0)

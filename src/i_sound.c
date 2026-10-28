@@ -35,8 +35,22 @@
 
 
 // Sound sample rate to use for digital output (Hz)
+// Deliberately HALF of HWAUDIO_RATE (sf3500/hwaudio.h, 48000) - Mix_Chunk
+// loading (Mix_LoadWAV, used for both SFX and substitute music) converts
+// the ENTIRE asset to this rate in memory at load time. Our substitute
+// music tracks are long (60-95s), uncompressed renders - at 48000Hz
+// stereo that's 16-51MB EACH, confirmed via real-hardware log to exceed
+// this device's ~150MB process ceiling for the larger tracks
+// ("Failed to load substitute music file: ...: Out of memory"), silently
+// falling back to real-time OPL synthesis (the exact CPU-stutter this
+// whole substitute-music system exists to avoid). Halving the mixer's
+// own rate halves every Mix_Chunk's resident size. Sf3500AudioPostMix()
+// upsamples 24000->48000 itself (simple 2x sample duplication) before
+// handing off to hwaudio_write(), since the hardware driver's rate is
+// fixed and not negotiable. Not exposed in any menu, so changing the
+// compiled-in default is the right fix, not a per-launch override.
 
-int snd_samplerate = 44100;
+int snd_samplerate = 24000;
 
 // Maximum number of bytes to dedicate to allocated sound effects.
 // (Default: 64MB)
@@ -45,6 +59,12 @@ int snd_cachesize = 64 * 1024 * 1024;
 
 // Config variable that controls the sound buffer size.
 // We default to 28ms (1000 / 35fps = 1 buffer per tic).
+// (Diagnostic note: halving this to 14 and re-measuring confirmed the
+// ~2x postmix-callback throughput deficit on this device's SDL dummy
+// audio driver is a fixed ratio, not tied to buffer size - both
+// in_frames and the real interval halved together, same ~2x gap either
+// way. Fixed in Sf3500AudioPostMix's upsample factor instead - see
+// sf3500_bridge.c - so this stays at its normal default.)
 
 int snd_maxslicetime_ms = 28;
 
@@ -57,6 +77,13 @@ char *snd_musiccmd = "";
 
 int snd_pitchshift = -1;
 
+// Real-time OPL FM synthesis for music confirmed too CPU-heavy for this
+// device's single weak core (diagnostic: snd_musicdevice=SNDDEVICE_NONE
+// ran smoothly, SNDDEVICE_SB stuttered). Fixed via pre-rendered OGG music
+// pack instead (see doom-package-launch.sh) - I_RegisterSong() tries the
+// music pack substitution unconditionally before consulting this device,
+// so SB stays as a harmless OPL fallback for any track the pack doesn't
+// cover, and real-time synthesis is never actually hit in normal play.
 int snd_musicdevice = SNDDEVICE_SB;
 int snd_sfxdevice = SNDDEVICE_SB;
 

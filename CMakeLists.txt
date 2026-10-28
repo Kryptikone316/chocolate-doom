@@ -42,6 +42,12 @@ endif()
 if(ENABLE_SDL2_MIXER)
     if (NOT DEFINED EMSCRIPTEN)
         find_package(SDL2_mixer 2.0.2)
+        # A static-lib SDL2_mixer build (as staged for this cross build)
+        # only exports SDL2_mixer::SDL2_mixer-static, not the plain alias
+        # this project links against - see sf3500_port_pipeline_recipe.md.
+        if(NOT TARGET SDL2_mixer::SDL2_mixer AND TARGET SDL2_mixer::SDL2_mixer-static)
+            add_library(SDL2_mixer::SDL2_mixer ALIAS SDL2_mixer::SDL2_mixer-static)
+        endif()
     endif()
 else()
     add_compile_definitions(DISABLE_SDL2MIXER=1)

@@ -40,6 +40,7 @@
 #include "i_timer.h"
 #include "i_video.h"
 #include "m_argv.h"
+#include "sf3500/sf3500_bridge.h"
 #include "m_config.h"
 #include "m_misc.h"
 #include "tables.h"
@@ -108,9 +109,18 @@ char *window_position = "center";
 int video_display = 0;
 
 // Screen width and height, from configuration file.
-
-int window_width = 800;
-int window_height = 600;
+// Forced to match the real logical resolution (SCREENWIDTH x
+// SCREENHEIGHT_4_3, see i_video.h) exactly - not exposed in any menu, so
+// changing the compiled-in default is the right fix, not a per-launch
+// override. Fullscreen mode (below) asks SDL for the "native" display
+// resolution via SDL_GetCurrentDisplayMode(), which this device's dummy
+// video driver reports as a bogus 1024x768 - far bigger than the real
+// hardware driver's own fixed 640x480 canvas, which rejects any frame
+// larger than itself outright ("Frame is too large than screen size",
+// confirmed on real hardware - a hard failure, not just a stretch/perf
+// issue like the equivalent fix needed for C-Dogs).
+int window_width = 320;
+int window_height = 240;
 
 // Fullscreen mode, 0x0 for SDL_WINDOW_FULLSCREEN_DESKTOP.
 
@@ -121,8 +131,11 @@ int fullscreen_width = 0, fullscreen_height = 0;
 static int max_scaling_buffer_pixels = 16000000;
 
 // Run in full screen mode?  (int type for config code)
+// Forced off - fullscreen mode is what triggers the bogus-display-mode
+// auto-detect above; windowed mode at window_width/height (above) gives
+// us the exact, correct resolution directly instead.
 
-int fullscreen = true;
+int fullscreen = false;
 
 // Aspect ratio correction mode
 
@@ -488,6 +501,7 @@ void I_StartTic (void)
     }
 
     I_GetEvent();
+    Sf3500PumpInput();
 
     if (usemouse && !nomouse && window_focused)
     {
@@ -817,7 +831,7 @@ void I_FinishUpdate (void)
 
     // Draw!
 
-    SDL_RenderPresent(renderer);
+    Sf3500PresentRenderer(renderer);
 
     // Restore background and undo the disk indicator, if it was drawn.
     V_RestoreDiskBackground();
@@ -1341,7 +1355,7 @@ static void SetVideoMode(void)
 
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
-    SDL_RenderPresent(renderer);
+    Sf3500PresentRenderer(renderer);
 
     // Create the 8-bit paletted and the 32-bit RGBA screenbuffer surfaces.
 
@@ -1438,10 +1452,12 @@ void I_InitGraphics(void)
 
     SetSDLVideoDriver();
 
-    if (SDL_Init(SDL_INIT_VIDEO) < 0) 
+    if (SDL_Init(SDL_INIT_VIDEO) < 0)
     {
         I_Error("Failed to initialize video: %s", SDL_GetError());
     }
+    Sf3500Init();
+    I_AtExit(Sf3500Deinit, true);
 
     // When in screensaver mode, run full screen and auto detect
     // screen dimensions (don't change video mode)
