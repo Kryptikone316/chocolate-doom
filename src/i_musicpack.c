@@ -43,6 +43,8 @@
 #include "w_wad.h"
 #include "z_zone.h"
 
+#include "sf3500/sf3500_bridge.h"
+
 
 char *music_pack_path = "";
 
@@ -134,8 +136,23 @@ static file_metadata_t file_metadata;
 static unsigned int current_track_pos;
 #endif // !USE_SDL_MIXER_LOOPING
 
-// Currently playing music track.
-static Mix_Music *current_track_music = NULL;
+// Currently playing music track's filename (strdup'd), kept only so
+// I_MP_UnRegisterSong() has something to free. Played via Sf3500Music*
+// (sf3500/sf3500_bridge.c) - NOT Mix_Music, NOT even Mix_Chunk. Root
+// cause, confirmed via real per-call timing instrumentation on real
+// hardware (2026-10-10): SDL's own audio-generation callback on this
+// device fires at a fraction of the real-time rate its opened spec
+// implies, and since SDL/SDL_mixer's playback-position tracking is
+// driven entirely by callback invocation count (not a real-time clock),
+// ANY playback method going through SDL_mixer - Mix_Music OR Mix_Chunk -
+// advances through the track at that same reduced fraction of real
+// speed. Confirmed this affects Mix_Chunk too (not just Mix_Music, the
+// first-suspected culprit): SFX stayed fine only because they're brief
+// one-shots, not continuously-advancing tracks. Sf3500Music* streams the
+// WAV directly from disk and mixes it in from Sf3500AudioPostMix,
+// advancing by genuine real elapsed time - fully independent of SDL's
+// audio callback entirely.
+static char *current_track_music = NULL;
 
 // If true, the currently playing track is being played on loop.
 static boolean current_track_loop;
@@ -739,7 +756,11 @@ static char *GetFullPath(const char *musicdir, const char *path)
 // GetFullPath().
 static char *ExpandFileExtension(const char *musicdir, const char *filename)
 {
-    static const char *extns[] = {".flac", ".ogg", ".mp3"};
+    // .wav added (upstream only tries compressed formats) - real-time
+    // Vorbis/FLAC decode is too CPU-heavy for this device's single weak
+    // core, same cost class as the OPL synthesis this pack replaces.
+    // SDL_mixer plays WAV as a Mix_Music with no decode cost at all.
+    static const char *extns[] = {".wav", ".flac", ".ogg", ".mp3"};
     char *replaced, *result;
     int i;
 
@@ -1094,7 +1115,7 @@ static void I_MP_ShutdownMusic(void)
 {
     if (music_initialized)
     {
-        Mix_HaltMusic();
+        Sf3500MusicStop();
         music_initialized = false;
 
         if (sdl_was_initialized)
@@ -1127,6 +1148,17 @@ void TrackPositionCallback(int chan, void *stream, int len, void *udata)
 static boolean I_MP_InitMusic(void)
 {
     int i;
+    const char *packdir;
+
+    // SF3500: the launcher points this at the port's own music_pack folder,
+    // an optional extra. A saved config would otherwise keep pointing at an
+    // old copy of the pack. If the folder does not exist there are no
+    // substitute tracks, and the game plays the music inside the WAD.
+    packdir = getenv("SF3500_MUSIC_PACK");
+    if (packdir != NULL && packdir[0] != '\0')
+    {
+        music_pack_path = M_StringDuplicate(packdir);
+    }
 
     //!
     // @category obscure
@@ -1191,15 +1223,13 @@ static boolean I_MP_InitMusic(void)
 
 static void I_MP_SetMusicVolume(int volume)
 {
-    Mix_VolumeMusic((volume * MIX_MAX_VOLUME) / 127);
+    Sf3500MusicSetVolume((volume * 128) / 127);
 }
 
 // Start playing a mid
 
 static void I_MP_PlaySong(void *handle, boolean looping)
 {
-    int loops;
-
     if (!music_initialized)
     {
         return;
@@ -1210,35 +1240,21 @@ static void I_MP_PlaySong(void *handle, boolean looping)
         return;
     }
 
-    current_track_music = (Mix_Music *) handle;
+    current_track_music = (char *) handle;
     current_track_loop = looping;
-
-    if (looping)
-    {
-        loops = -1;
-    }
-    else
-    {
-        loops = 1;
-    }
 
 #if !USE_SDL_MIXER_LOOPING
     // Don't loop when playing substitute music, as we do it
     // ourselves instead.
     if (file_metadata.valid)
     {
-        loops = 1;
         SDL_LockAudio();
         current_track_pos = 0;  // start of track
         SDL_UnlockAudio();
     }
 #endif // !USE_SDL_MIXER_LOOPING
 
-    if (Mix_PlayMusic(current_track_music, loops) == -1)
-    {
-        fprintf(stderr, "I_MP_PlaySong: Error starting track: %s\n",
-                Mix_GetError());
-    }
+    Sf3500MusicPlay(looping);
 }
 
 static void I_MP_PauseSong(void)
@@ -1248,7 +1264,7 @@ static void I_MP_PauseSong(void)
         return;
     }
 
-    Mix_PauseMusic();
+    Sf3500MusicStop();
 }
 
 static void I_MP_ResumeSong(void)
@@ -1258,7 +1274,7 @@ static void I_MP_ResumeSong(void)
         return;
     }
 
-    Mix_ResumeMusic();
+    Sf3500MusicPlay(current_track_loop);
 }
 
 static void I_MP_StopSong(void)
@@ -1268,13 +1284,13 @@ static void I_MP_StopSong(void)
         return;
     }
 
-    Mix_HaltMusic();
+    Sf3500MusicStop();
     current_track_music = NULL;
 }
 
 static void I_MP_UnRegisterSong(void *handle)
 {
-    Mix_Music *music = (Mix_Music *) handle;
+    char *filename = (char *) handle;
 
     if (!music_initialized)
     {
@@ -1286,13 +1302,12 @@ static void I_MP_UnRegisterSong(void *handle)
         return;
     }
 
-    Mix_FreeMusic(music);
+    free(filename);
 }
 
 static void *I_MP_RegisterSong(void *data, int len)
 {
     const char *filename;
-    Mix_Music *music;
 
     if (!music_initialized)
     {
@@ -1306,13 +1321,10 @@ static void *I_MP_RegisterSong(void *data, int len)
         return NULL;
     }
 
-    music = Mix_LoadMUS(filename);
-    if (music == NULL)
+    if (!Sf3500MusicLoad(filename))
     {
-        // Fall through and play MIDI normally, but print an error
-        // message.
-        fprintf(stderr, "Failed to load substitute music file: %s: %s\n",
-                filename, Mix_GetError());
+        fprintf(stderr, "Failed to load substitute music file: %s\n",
+                filename);
         return NULL;
     }
 
@@ -1321,7 +1333,9 @@ static void *I_MP_RegisterSong(void *data, int len)
     // to loop the music.
     ReadLoopPoints(filename, &file_metadata);
 #endif // !USE_SDL_MIXER_LOOPING
-    return music;
+    // Handle only needs to be a non-NULL pointer I_MP_UnRegisterSong() can
+    // free() - the real loaded state lives in sf3500_bridge.c.
+    return strdup(filename);
 }
 
 // Is the song playing?
@@ -1332,7 +1346,7 @@ static boolean I_MP_MusicIsPlaying(void)
         return false;
     }
 
-    return Mix_PlayingMusic();
+    return Sf3500MusicIsPlaying() != 0;
 }
 
 #if !USE_SDL_MIXER_LOOPING
@@ -1356,10 +1370,13 @@ static void RestartCurrentTrack(void)
     double start = (double) file_metadata.start_time
                  / file_metadata.samplerate_hz;
 
-    // If the track finished we need to restart it.
+    // If the track finished we need to restart it. This path only runs for
+    // file_metadata.valid tracks (FLAC/OGG loop-tag metadata), which our
+    // plain WAV substitutes never produce - dead in practice, kept
+    // compiling via the Sf3500Music-consistent call shape.
     if (current_track_music != NULL)
     {
-        Mix_PlayMusic(current_track_music, 1);
+        Sf3500MusicPlay(0);
     }
 
     Mix_SetMusicPosition(start);
@@ -1389,7 +1406,7 @@ static void I_MP_PollMusic(void)
         }
 
         // Have we reached the actual end of track (not loop end)?
-        if (!Mix_PlayingMusic())
+        if (!Sf3500MusicIsPlaying())
         {
             RestartCurrentTrack();
         }

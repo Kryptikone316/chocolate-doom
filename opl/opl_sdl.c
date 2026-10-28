@@ -160,6 +160,51 @@ static void AdvanceTime(unsigned int nsamples)
     SDL_UnlockMutex(callback_queue_mutex);
 }
 
+// SF3500: the OPL music comes out quiet next to the sound effects on this
+// device's speaker. SF3500_OPL_GAIN (a number, default 1) scales it, clipped
+// to 16 bits. SF3500_OPL_DIAG=1 logs the music's peak level about every two
+// seconds, to pick the gain from.
+static void Sf3500OplGain(Bit16s *samples, unsigned int count)
+{
+    static int inited = 0, diag = 0, gain_q8 = 256;
+    static int peak = 0;
+    static unsigned int since = 0;
+    unsigned int i;
+
+    if (!inited)
+    {
+        const char *g = getenv("SF3500_OPL_GAIN");
+        inited = 1;
+        if (g != NULL && atof(g) > 0.0)
+        {
+            gain_q8 = (int) (atof(g) * 256.0 + 0.5);
+        }
+        diag = getenv("SF3500_OPL_DIAG") != NULL;
+        fprintf(stderr, "opl: gain %.2f diag %d\n", gain_q8 / 256.0, diag);
+    }
+
+    for (i = 0; i < count; ++i)
+    {
+        int v = samples[i];
+        int a = v < 0 ? -v : v;
+        if (a > peak)
+        {
+            peak = a;
+        }
+        v = (v * gain_q8) >> 8;
+        samples[i] = v > 32767 ? 32767 : (v < -32768 ? -32768 : v);
+    }
+
+    since += count / 2;
+    if (diag && since >= (unsigned int) (mixing_freq * 2))
+    {
+        fprintf(stderr, "opl: peak before gain %d of 32767 (%d%%)\n",
+                peak, peak * 100 / 32767);
+        peak = 0;
+        since = 0;
+    }
+}
+
 // Call the OPL emulator code to fill the specified buffer.
 
 static void FillBuffer(uint8_t *buffer, unsigned int nsamples)
@@ -172,6 +217,7 @@ static void FillBuffer(uint8_t *buffer, unsigned int nsamples)
     // OPL output is generated into temporary buffer and then mixed
     // (to avoid overflows etc.)
     OPL3_GenerateStream(&opl_chip, (Bit16s *) mix_buffer, nsamples);
+    Sf3500OplGain((Bit16s *) mix_buffer, nsamples * 2);
     SDL_MixAudioFormat(buffer, mix_buffer, AUDIO_S16SYS, nsamples * 4,
                        SDL_MIX_MAXVOLUME);
 }
